@@ -593,14 +593,16 @@ dlg_menu(const char *title,
 		i = MIN(choice + max_choice, item_no - scrollamt - 1);
 		break;
 	    case DLGK_ITEM_PREV:
-		i = choice - 1;
 		if (choice == 0 && scrollamt == 0)
-		    continue;
+		    i = item_no - 1 - scrollamt;
+		else
+		    i = choice - 1;
 		break;
 	    case DLGK_ITEM_NEXT:
-		i = choice + 1;
 		if (scrollamt + choice >= item_no - 1)
-		    continue;
+		    i = -scrollamt;
+		else
+		    i = choice + 1;
 		break;
 	    default:
 		found = FALSE;
