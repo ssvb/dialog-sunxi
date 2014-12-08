@@ -24,6 +24,9 @@
 #include <dialog.h>
 #include <dlg_keys.h>
 
+#include <sys/mman.h>
+#include <inttypes.h>
+
 #ifdef NEED_WCHAR_H
 #include <wchar.h>
 #endif
@@ -331,6 +334,141 @@ valid_file(FILE *fp)
     return code;
 }
 
+static int is_sunxi_proc_cpuinfo(void)
+{
+    int result = 0;
+    char buffer[512];
+    FILE *fd = fopen("/proc/cpuinfo", "r");
+    if (fd) {
+	while (fgets(buffer, sizeof(buffer), fd)) {
+	    if (!strstr(buffer, "Hardware"))
+		continue;
+	    if (strstr(buffer, "Allwinner"))
+		result = 1;
+	    if (strstr(buffer, "sun4i"))
+		result = 1;
+	    if (strstr(buffer, "sun5i"))
+		result = 1;
+	    if (strstr(buffer, "sun6i"))
+		result = 1;
+	    if (strstr(buffer, "sun7i"))
+		result = 1;
+	    if (result)
+		break;
+	}
+	fclose(fd);
+    }
+    return result;
+}
+
+#define SUNXI_SYS_CTRL_BASE 0x01C00000
+
+/* Clock control header copied from include/asm/arch-sunxi/clock.h */
+typedef struct sunxi_sysctrl_reg_t {
+	volatile uint32_t dummy[0x24 / 4];
+	volatile uint32_t ver_reg;
+} sunxi_sysctrl_reg_t;
+
+static int is_fel_button_pressed(void)
+{
+    static int try_to_detect_sunxi_fel_button = 1;
+    static int have_sunxi_fel_button = 0;
+    static int fel_button_bit = 8;
+    static int devmem_fd = -1;
+    static sunxi_sysctrl_reg_t *sunxi_sysctrl_reg;
+
+    if (try_to_detect_sunxi_fel_button) {
+	try_to_detect_sunxi_fel_button = 0; /* do it only once */
+	if (is_sunxi_proc_cpuinfo()) {
+	    devmem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+	    if (devmem_fd != -1) {
+		sunxi_sysctrl_reg = (sunxi_sysctrl_reg_t *)mmap(
+					NULL, 4096, PROT_READ | PROT_WRITE,
+					MAP_SHARED, devmem_fd,
+					SUNXI_SYS_CTRL_BASE);
+		if (sunxi_sysctrl_reg != MAP_FAILED) {
+		    have_sunxi_fel_button = 1;
+		    sunxi_sysctrl_reg->ver_reg |= 1 << 15;
+		    if ((sunxi_sysctrl_reg->ver_reg >> 16) == 0x1633)
+			fel_button_bit = 10;
+		}
+	    }
+	}
+    }
+
+    if (!have_sunxi_fel_button)
+	return 0;
+
+    return !(sunxi_sysctrl_reg->ver_reg & (1 << fel_button_bit));
+}
+
+static int fel_button_wgetch(void)
+{
+    static int wait_for_button_release = 1;
+    #define LONG_PRESS_TIME 1000
+    if (wait_for_button_release && !is_fel_button_pressed()) {
+	wait_for_button_release = 0;
+	return ERR;
+    }
+    if (!wait_for_button_release && is_fel_button_pressed()) {
+	int ms_counter = 0;
+	while (is_fel_button_pressed()) {
+	    if (ms_counter >= LONG_PRESS_TIME) {
+		wait_for_button_release = 1;
+		return KEY_ENTER;
+	    }
+	    usleep(10000);
+	    ms_counter += 10;
+	}
+	return KEY_DOWN;
+    } else {
+	return ERR;
+    }
+}
+
+#ifdef USE_WIDE_CURSES
+
+static int fel_aware_wget_wch(WINDOW *win, wint_t *wch)
+{
+    int ch;
+    nodelay(win, 1);
+    while (1) {
+	ch = fel_button_wgetch();
+	if (ch != ERR) {
+	    *wch = ch;
+	    ch = KEY_CODE_YES;
+	    break;
+	}
+	ch = wget_wch(win, wch);
+	if (ch != ERR)
+	    break;
+	usleep(1000);
+    }
+    nodelay(win, 0);
+    return ch;
+}
+
+#else
+
+static int fel_aware_wgetch(WINDOW *win)
+{
+    int ch;
+    nodelay(win, 1);
+    while (1) {
+	ch = fel_button_wgetch();
+	if (ch != ERR)
+	    break;
+	ch = wgetch(win);
+	if (ch != ERR)
+	    break;
+	usleep(1000);
+    }
+    nodelay(win, 0);
+    return ch;
+}
+
+#endif
+
 static int
 really_getch(WINDOW *win, int *fkey)
 {
@@ -350,7 +488,7 @@ really_getch(WINDOW *win, int *fkey)
 	have_last_getc = 0;
 	ch = ERR;
 	*fkey = 0;
-	code = wget_wch(win, &my_wint);
+	code = fel_aware_wget_wch(win, &my_wint);
 	my_wchar = (wchar_t) my_wint;
 	switch (code) {
 	case KEY_CODE_YES:
@@ -378,7 +516,7 @@ really_getch(WINDOW *win, int *fkey)
 	ch = (int) CharOf(last_getc_bytes[used_last_getc++]);
     }
 #else
-    ch = wgetch(win);
+    ch = fel_aware_wgetch(win);
     last_getc = ch;
     *fkey = (ch > KEY_MIN && ch < KEY_MAX);
 #endif
