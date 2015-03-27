@@ -379,7 +379,7 @@ static int is_fel_button_pressed(void)
 
     if (try_to_detect_sunxi_fel_button) {
 	try_to_detect_sunxi_fel_button = 0; /* do it only once */
-	if (is_sunxi_proc_cpuinfo()) {
+	if (is_sunxi_proc_cpuinfo() && !getenv("DIALOG_SUNXI_NO_FEL")) {
 	    devmem_fd = open("/dev/mem", O_RDWR | O_SYNC);
 	    if (devmem_fd != -1) {
 		sunxi_sysctrl_reg = (sunxi_sysctrl_reg_t *)mmap(
